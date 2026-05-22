@@ -82,5 +82,4 @@ Then open:
 
 ## Security
 
-Do not commit your real bearer token.
-Rotate it if it was pasted into chat or shared anywhere insecure.
+Bearer token is rotated frequently, once every 90 mins so this will have to be updated daily. You do need a subsciption for authentication to the StockOracle endpoints.
