@@ -1,6 +1,6 @@
 # StockOracle Sector Dashboard
 
-This project pulls StockOracle summary data for stocks held in the 11 SPDR sector ETFs:
+This project pulls StockOracle summary data for stocks held in the 11 SPDR sector ETFs. Effectively, the S&P500:
 
 - XLK
 - XLF
