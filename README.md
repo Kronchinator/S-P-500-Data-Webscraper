@@ -16,10 +16,14 @@ This project pulls StockOracle summary data for stocks held in the 11 SPDR secto
 
 ## What it fetches
 
-For each ticker, it fetches:
+For each ticker, it fetches and derives:
 
 - Oracle Value
 - DCF Value
+- DCF upside
+- Quality score
+- Opportunity score
+- Signal bucket: Core candidate, Watchlist, Speculative, Neutral, or Avoid / expensive
 - Profitability
 - Financial Strength
 - Oracle Moat
@@ -66,6 +70,12 @@ Build dashboard:
 
 ```bash
 python src/build_dashboard.py
+```
+
+Run tests:
+
+```bash
+python -m pytest -q
 ```
 
 Then open:

@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+try:
+    from src.dashboard_metrics import enrich_dataset
+except ModuleNotFoundError:  # Allows `python src/build_dashboard.py` from repo root.
+    from dashboard_metrics import enrich_dataset
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data" / "processed" / "stockoracle_sector_dataset.json"
 OUT_PATH = ROOT / "dashboard" / "index.html"
@@ -32,6 +37,8 @@ TEMPLATE = """<!doctype html>
       --warn-dim:rgba(245,183,49,.13);
       --bad:#ff5e7d;
       --bad-dim:rgba(255,94,125,.13);
+      --info:#38bdf8;
+      --info-dim:rgba(56,189,248,.13);
     }
     * { box-sizing:border-box; }
     body {
@@ -122,7 +129,7 @@ TEMPLATE = """<!doctype html>
     .v { font-size:26px; font-weight:700; margin-top:8px; font-family:'JetBrains Mono',monospace; letter-spacing:-0.02em; }
     .toolbar {
       display:grid;
-      grid-template-columns:2fr repeat(4,1fr) auto;
+      grid-template-columns:2fr repeat(5,1fr) auto;
       gap:10px;
       margin-bottom:18px;
     }
@@ -201,9 +208,22 @@ TEMPLATE = """<!doctype html>
       font-weight:700;
       letter-spacing:.04em;
     }
-    .HIGH,.WIDE,.UNDERVALUED,.GOOD { background:var(--good-dim); color:var(--good); border:1px solid rgba(30,217,154,.2); }
-    .MEDIUM,.FAIRLY_VALUED,.NARROW { background:var(--warn-dim); color:var(--warn); border:1px solid rgba(245,183,49,.2); }
-    .LOW,.OVERVALUED,.NO_MOAT,.WEAK { background:var(--bad-dim); color:var(--bad); border:1px solid rgba(255,94,125,.2); }
+    .HIGH,.WIDE,.UNDERVALUED,.VERY_UNDERVALUED,.GOOD,.Core_candidate { background:var(--good-dim); color:var(--good); border:1px solid rgba(30,217,154,.2); }
+    .MEDIUM,.FAIRLY_VALUED,.NARROW,.Watchlist,.Neutral { background:var(--warn-dim); color:var(--warn); border:1px solid rgba(245,183,49,.2); }
+    .LOW,.OVERVALUED,.VERY_OVERVALUED,.NO_MOAT,.WEAK,.Speculative,.Avoid_expensive { background:var(--bad-dim); color:var(--bad); border:1px solid rgba(255,94,125,.2); }
+    .score {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-width:42px;
+      padding:4px 8px;
+      border-radius:10px;
+      background:var(--info-dim);
+      color:var(--info);
+      border:1px solid rgba(56,189,248,.2);
+      font-family:'JetBrains Mono',monospace;
+      font-weight:700;
+    }
     .sub { font-size:12px; color:var(--muted); margin-top:4px; }
     .grid-2 { display:grid; grid-template-columns:1.25fr 1fr; gap:14px; margin:18px 0; }
     .section h3 { font-size:15px; font-weight:600; margin-bottom:4px; }
@@ -237,17 +257,18 @@ TEMPLATE = """<!doctype html>
     <select id=\"moatFilter\"></select>
     <select id=\"profitFilter\"></select>
     <select id=\"valuationFilter\"></select>
+    <select id=\"signalFilter\"></select>
     <button id=\"exportBtn\">Export CSV</button>
   </div>
 
   <div class=\"grid-2\">
     <div class=\"section\">
-      <h3>Top opportunities</h3>
-      <p class=\"sub\">Highest DCF upside among currently visible stocks.</p>
+      <h3>Best finance candidates</h3>
+      <p class=\"sub\">Highest blended score: quality, valuation bucket, and DCF upside. This is a ranking aid, not gospel from Mount Bloomberg.</p>
       <div class=\"table-wrap\">
         <table class=\"mini-table\">
           <thead>
-            <tr><th>Ticker</th><th>Name</th><th>DCF Upside</th><th>Moat</th><th>Valuation</th></tr>
+            <tr><th>Ticker</th><th>Name</th><th>Score</th><th>DCF Upside</th><th>Signal</th></tr>
           </thead>
           <tbody id=\"topRows\"></tbody>
         </table>
@@ -259,7 +280,7 @@ TEMPLATE = """<!doctype html>
       <div class=\"table-wrap\">
         <table class=\"mini-table\">
           <thead>
-            <tr><th>ETF</th><th>Stocks</th><th>Avg Upside</th><th>Wide Moat</th><th>Undervalued</th></tr>
+            <tr><th>ETF</th><th>Stocks</th><th>Avg Score</th><th>Avg Upside</th><th>Core</th></tr>
           </thead>
           <tbody id=\"etfRows\"></tbody>
         </table>
@@ -278,6 +299,9 @@ TEMPLATE = """<!doctype html>
             <th data-sort=\"oracle_value\">Oracle Value</th>
             <th data-sort=\"dcf_value\">DCF Value</th>
             <th data-sort=\"upside\">DCF Upside %</th>
+            <th data-sort=\"opportunity_score\">Opportunity</th>
+            <th data-sort=\"quality_score\">Quality</th>
+            <th data-sort=\"signal\">Signal</th>
             <th data-sort=\"profitability\">Profitability</th>
             <th data-sort=\"financial_strength\">Financial Strength</th>
             <th data-sort=\"oracle_moat\">Oracle Moat</th>
@@ -299,23 +323,19 @@ TEMPLATE = """<!doctype html>
       <div class=\"legend-item\"><span class=\"pill UNDERVALUED\">UNDERVALUED</span> attractive relative value</div>
       <div class=\"legend-item\"><span class=\"pill OVERVALUED\">OVERVALUED</span> richer pricing</div>
     </div>
-    <div class=\"footer-note\">// DCF upside = (DCF Value − Oracle Value) / Oracle Value</div>
+    <div class=\"footer-note\">// Opportunity score = 42.6% quality + 44.4% valuation bucket + 13% DCF upside. Use it to shortlist, not to outsource judgment.</div>
   </div>
 </div>
 <script>
-const rawData = __DATA__.map(r => {
-  const oracle = Number(r.oracle_value);
-  const dcf = Number(r.dcf_value);
-  return { ...r, oracle_value_num: oracle, dcf_value_num: dcf, upside: oracle ? (((dcf - oracle) / oracle) * 100) : null };
-});
-let currentSort = { key: 'upside', dir: 'desc' };
+const rawData = __DATA__;
+let currentSort = { key: 'opportunity_score', dir: 'desc' };
 
 function uniqueValues(key) {
   return [...new Set(rawData.map(r => r[key]).filter(Boolean))].sort();
 }
 
 function pillClass(value) {
-  return String(value || '').replace(/\\s+/g, '_').replace(/[^A-Za-z0-9_]/g, '').toUpperCase();
+  return String(value || '').replace(/\s+|\//g, '_').replace(/[^A-Za-z0-9_]/g, '').replace(/_+/g, '_');
 }
 
 function formatNum(value) {
@@ -339,12 +359,14 @@ function filteredData() {
   const moat = document.getElementById('moatFilter').value;
   const profit = document.getElementById('profitFilter').value;
   const valuation = document.getElementById('valuationFilter').value;
+  const signal = document.getElementById('signalFilter').value;
   return rawData.filter(r => {
     if (q && !(r.ticker.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))) return false;
     if (etf && !r.etfs.split(',').map(x => x.trim()).includes(etf)) return false;
     if (moat && r.oracle_moat !== moat) return false;
     if (profit && r.profitability !== profit) return false;
     if (valuation && r.valuation !== valuation) return false;
+    if (signal && r.signal !== signal) return false;
     return true;
   });
 }
@@ -369,23 +391,23 @@ function renderCards(data) {
   const highStrength = data.filter(r => r.financial_strength === 'HIGH').length;
   document.getElementById('summaryCards').innerHTML = `
     <div class="card"><div class="k">Visible stocks</div><div class="v">${data.length}</div></div>
+    <div class="card"><div class="k">Avg opportunity</div><div class="v">${formatNum(data.length ? data.reduce((s,r) => s + (r.opportunity_score || 0), 0) / data.length : 0)}</div></div>
+    <div class="card"><div class="k">Core candidates</div><div class="v">${data.filter(r => r.signal === 'Core candidate').length}</div></div>
     <div class="card"><div class="k">Avg DCF upside</div><div class="v">${formatPct(avgUpside)}</div></div>
     <div class="card"><div class="k">Wide moat</div><div class="v">${wide}</div></div>
     <div class="card"><div class="k">Undervalued</div><div class="v">${undervalued}</div></div>
-    <div class="card"><div class="k">High profitability</div><div class="v">${highProfit}</div></div>
-    <div class="card"><div class="k">High financial strength</div><div class="v">${highStrength}</div></div>
   `;
 }
 
 function renderTopRows(data) {
-  const top = [...data].filter(r => r.upside !== null).sort((a,b) => b.upside - a.upside).slice(0, 12);
+  const top = [...data].sort((a,b) => (b.opportunity_score - a.opportunity_score) || ((b.upside || 0) - (a.upside || 0))).slice(0, 12);
   document.getElementById('topRows').innerHTML = top.map(r => `
     <tr>
       <td><strong>${r.ticker}</strong></td>
       <td>${r.name}</td>
+      <td><span class="score">${r.opportunity_score}</span></td>
       <td>${formatPct(r.upside)}</td>
-      <td><span class="pill ${pillClass(r.oracle_moat)}">${r.oracle_moat || ''}</span></td>
-      <td><span class="pill ${pillClass(r.valuation)}">${r.valuation || ''}</span></td>
+      <td><span class="pill ${pillClass(r.signal)}">${r.signal || ''}</span></td>
     </tr>
   `).join('');
 }
@@ -401,15 +423,15 @@ function renderEtfRows(data) {
   const etfs = Object.entries(groups).sort((a,b) => a[0].localeCompare(b[0]));
   document.getElementById('etfRows').innerHTML = etfs.map(([etf, rows]) => {
     const avgUpside = rows.length ? rows.reduce((s,r) => s + (r.upside || 0), 0) / rows.length : 0;
-    const wide = rows.filter(r => r.oracle_moat === 'WIDE').length;
-    const undervalued = rows.filter(r => r.valuation === 'UNDERVALUED').length;
+    const avgScore = rows.length ? rows.reduce((s,r) => s + (r.opportunity_score || 0), 0) / rows.length : 0;
+    const core = rows.filter(r => r.signal === 'Core candidate').length;
     return `
       <tr>
         <td><strong>${etf}</strong></td>
         <td>${rows.length}</td>
+        <td><span class="score">${formatNum(avgScore)}</span></td>
         <td>${formatPct(avgUpside)}</td>
-        <td>${wide}</td>
-        <td>${undervalued}</td>
+        <td>${core}</td>
       </tr>
     `;
   }).join('');
@@ -428,6 +450,9 @@ function renderTable() {
       <td>${formatNum(r.oracle_value)}</td>
       <td>${formatNum(r.dcf_value)}</td>
       <td>${formatPct(r.upside)}</td>
+      <td><span class="score">${r.opportunity_score}</span></td>
+      <td><span class="score">${r.quality_score}</span></td>
+      <td><span class="pill ${pillClass(r.signal)}">${r.signal || ''}</span></td>
       <td><span class="pill ${pillClass(r.profitability)}">${r.profitability || ''}</span></td>
       <td><span class="pill ${pillClass(r.financial_strength)}">${r.financial_strength || ''}</span></td>
       <td><span class="pill ${pillClass(r.oracle_moat)}">${r.oracle_moat || ''}</span></td>
@@ -438,7 +463,7 @@ function renderTable() {
 
 function exportCsv() {
   const rows = filteredData();
-  const headers = ['ticker','name','etfs','oracle_value','dcf_value','upside','profitability','financial_strength','oracle_moat','valuation'];
+  const headers = ['ticker','name','etfs','oracle_value','dcf_value','upside','opportunity_score','quality_score','signal','profitability','financial_strength','oracle_moat','valuation'];
   const lines = [headers.join(',')].concat(rows.map(r => headers.map(h => JSON.stringify(r[h] ?? '')).join(',')));
   const blob = new Blob([lines.join('\\n')], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -453,8 +478,9 @@ makeOptions('etfFilter', [...new Set(rawData.flatMap(r => r.etfs.split(',').map(
 makeOptions('moatFilter', uniqueValues('oracle_moat'), 'Moat');
 makeOptions('profitFilter', uniqueValues('profitability'), 'Profitability');
 makeOptions('valuationFilter', uniqueValues('valuation'), 'Valuation');
+makeOptions('signalFilter', uniqueValues('signal'), 'Signal');
 
-for (const id of ['search','etfFilter','moatFilter','profitFilter','valuationFilter']) {
+for (const id of ['search','etfFilter','moatFilter','profitFilter','valuationFilter','signalFilter']) {
   document.getElementById(id).addEventListener('input', renderTable);
   document.getElementById(id).addEventListener('change', renderTable);
 }
@@ -477,7 +503,8 @@ renderTable();
 
 
 def main() -> None:
-    data = json.loads(DATA_PATH.read_text())
+    raw_data = json.loads(DATA_PATH.read_text())
+    data = enrich_dataset(raw_data)
     html = TEMPLATE.replace("__DATA__", json.dumps(data)).replace("__COUNT__", str(len(data)))
     OUT_PATH.write_text(html)
     print(f"Wrote {OUT_PATH}")
