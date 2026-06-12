@@ -18,3 +18,4 @@ auth-state.json
 auth-profiles.json
 *.pem
 *.key
+data/raw/

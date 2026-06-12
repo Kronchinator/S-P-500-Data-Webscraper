@@ -112,6 +112,7 @@ def main() -> None:
                     "valuation",
                     "etf_weights",
                 ],
+                lineterminator="\n",
             )
             writer.writeheader()
             for row in enriched:
